@@ -2,7 +2,7 @@ name: Smart Website Refresher
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # runs every 5 minutes to check if it should refresh
+    - cron: "*/10 * * * *"   # runs every 10 minutes to stay within Render's 15-minute window
   workflow_dispatch:
 
 jobs:
@@ -11,19 +11,7 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - name: Decision Logic (Averages every 12 minutes)
-        id: decision
-        run: |
-          # 41% chance to run (5/12 * 100) to average once every 12 mins
-          PROB=$((RANDOM % 100))
-          if [ "$PROB" -lt 41 ] || [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            echo "run=true" >> $GITHUB_OUTPUT
-          else
-            echo "run=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Refresh websites with natural simulation
-        if: steps.decision.outputs.run == 'true'
+      - name: Refresh sites with reliable logic
         run: |
           SITES=("https://futureminds.edu.np" "https://rodnpost.com")
           
@@ -48,22 +36,28 @@ jobs:
             UA=${USER_AGENTS[$((RANDOM % ${#USER_AGENTS[@]}))]}
             REF=${REFERRERS[$((RANDOM % ${#REFERRERS[@]}))]}
             
-            # Random jitter (up to 300 seconds = 5 minutes)
-            SLEEP_TIME=$((RANDOM % 300))
+            # Small random jitter (up to 120 seconds) to avoid rigid patterns
+            # while staying well within the 15-minute limit.
+            SLEEP_TIME=$((RANDOM % 120))
             echo "Waiting $SLEEP_TIME seconds for $SITE..."
             sleep $SLEEP_TIME
             
-            echo "Refreshing $SITE with UA: $UA and Referer: $REF"
+            # Use a cache-buster query parameter to ensure Render origin is hit
+            TIMESTAMP=$(date +%s)
+            CACHE_BUSTER_URL="${SITE}?t=${TIMESTAMP}"
             
-            STATUS=$(curl -o /dev/null -s -w "%{http_code}" -A "$UA" -e "$REF" "$SITE")
+            echo "Refreshing $CACHE_BUSTER_URL with UA: $UA and Referer: $REF"
             
-            if [ "$STATUS" -eq 200 ]; then
-              echo "$(date) ✅ Success: $SITE"
+            STATUS=$(curl -o /dev/null -s -w "%{http_code}" \
+              --connect-timeout 15 \
+              --max-time 45 \
+              -A "$UA" \
+              -e "$REF" \
+              "$CACHE_BUSTER_URL")
+            
+            if [ "$STATUS" -eq 200 ] || [ "$STATUS" -eq 301 ] || [ "$STATUS" -eq 302 ]; then
+              echo "$(date) ✅ Success: $SITE (Status: $STATUS)"
             else
-              echo "$(date) ⚠️ Failed: $SITE (status $STATUS)"
+              echo "$(date) ⚠️ Warning/Failed: $SITE (Status: $STATUS)"
             fi
           done
-
-      - name: Skip log
-        if: steps.decision.outputs.run == 'false'
-        run: echo "Skipping this cycle to maintain ~12 minute average."
