@@ -33,49 +33,60 @@ jobs:
 
           for SITE in "${SITES[@]}"
           do
-            UA=${USER_AGENTS[$((RANDOM % ${#USER_AGENTS[@]}))]}
-            REF=${REFERRERS[$((RANDOM % ${#REFERRERS[@]}))]}
+            # Sub-paths to hit to ensure various parts of the app are touched
+            PATHS=("/" "/?health-check=true")
             
-            # Small random jitter (up to 120 seconds) to avoid rigid patterns
-            # while staying well within the 15-minute limit.
-            SLEEP_TIME=$((RANDOM % 120))
-            echo "Waiting $SLEEP_TIME seconds for $SITE..."
-            sleep $SLEEP_TIME
-            
-            MAX_RETRIES=3
-            RETRY_COUNT=0
-            SUCCESS=false
-            
-            while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$SUCCESS" = false ]; do
-              # Use a cache-buster query parameter to ensure Render origin is hit
-              TIMESTAMP=$(date +%s)
-              CACHE_BUSTER_URL="${SITE}?t=${TIMESTAMP}"
+            for PATH_SUFFIX in "${PATHS[@]}"
+            do
+              UA=${USER_AGENTS[$((RANDOM % ${#USER_AGENTS[@]}))]}
+              REF=${REFERRERS[$((RANDOM % ${#REFERRERS[@]}))]}
               
-              if [ $RETRY_COUNT -gt 0 ]; then
-                echo "Retry attempt $RETRY_COUNT for $SITE..."
-                sleep 5
-              fi
+              # Tighter jitter (up to 30s) to keep intervals more predictable
+              SLEEP_TIME=$((RANDOM % 30))
+              echo "Waiting $SLEEP_TIME seconds before hitting $SITE$PATH_SUFFIX..."
+              sleep $SLEEP_TIME
               
-              echo "Refreshing $CACHE_BUSTER_URL with UA: $UA and Referer: $REF"
+              MAX_RETRIES=3
+              RETRY_COUNT=0
+              SUCCESS=false
               
-              # Capture HTTP status code, default to 000 on tool failure
-              STATUS=$(curl -o /dev/null -s -w "%{http_code}" \
-                --connect-timeout 20 \
-                --max-time 60 \
-                -A "$UA" \
-                -e "$REF" \
-                "$CACHE_BUSTER_URL" || echo "000")
+              while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$SUCCESS" = false ]; do
+                TIMESTAMP=$(date +%s)
+                # Ensure each request is unique to bypass all levels of caching
+                CACHE_BUSTER_URL="${SITE}${PATH_SUFFIX}"
+                if [[ "$CACHE_BUSTER_URL" == *'?'* ]]; then
+                  CACHE_BUSTER_URL="${CACHE_BUSTER_URL}&t=${TIMESTAMP}"
+                else
+                  CACHE_BUSTER_URL="${CACHE_BUSTER_URL}?t=${TIMESTAMP}"
+                fi
+                
+                if [ $RETRY_COUNT -gt 0 ]; then
+                  echo "Retry attempt $RETRY_COUNT for $CACHE_BUSTER_URL..."
+                  sleep 10
+                fi
+                
+                echo "Refreshing $CACHE_BUSTER_URL"
+                echo "UA: $UA"
+                [ -n "$REF" ] && echo "Referer: $REF"
+                
+                STATUS=$(curl -o /dev/null -s -w "%{http_code}" \
+                  --connect-timeout 20 \
+                  --max-time 60 \
+                  -A "$UA" \
+                  -e "$REF" \
+                  "$CACHE_BUSTER_URL" || echo "000")
+                
+                if [ "$STATUS" -eq 200 ] || [ "$STATUS" -eq 301 ] || [ "$STATUS" -eq 302 ] || [ "$STATUS" -eq 404 ]; then
+                  echo "$(date) ✅ Success: $CACHE_BUSTER_URL (Status: $STATUS)"
+                  SUCCESS=true
+                else
+                  echo "$(date) ⚠️ Attempt $((RETRY_COUNT + 1)) failed for $CACHE_BUSTER_URL (Status: $STATUS)"
+                  RETRY_COUNT=$((RETRY_COUNT + 1))
+                fi
+              done
               
-              if [ "$STATUS" -eq 200 ] || [ "$STATUS" -eq 301 ] || [ "$STATUS" -eq 302 ]; then
-                echo "$(date) ✅ Success: $SITE (Status: $STATUS)"
-                SUCCESS=true
-              else
-                echo "$(date) ⚠️ Attempt $((RETRY_COUNT + 1)) failed for $SITE (Status: $STATUS)"
-                RETRY_COUNT=$((RETRY_COUNT + 1))
-              fi
+              # Small gap between sub-path requests
+              echo "Waiting 15s before next path..."
+              sleep 15
             done
-            
-            if [ "$SUCCESS" = false ]; then
-              echo "$(date) ❌ Final failure: $SITE after $MAX_RETRIES attempts."
-            fi
           done
