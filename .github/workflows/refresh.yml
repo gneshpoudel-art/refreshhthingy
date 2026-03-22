@@ -46,13 +46,12 @@ jobs:
               echo "Waiting $SLEEP_TIME seconds before hitting $SITE$PATH_SUFFIX..."
               sleep $SLEEP_TIME
               
-              MAX_RETRIES=3
+              MAX_RETRIES=5
               RETRY_COUNT=0
               SUCCESS=false
               
               while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$SUCCESS" = false ]; do
                 TIMESTAMP=$(date +%s)
-                # Ensure each request is unique to bypass all levels of caching
                 CACHE_BUSTER_URL="${SITE}${PATH_SUFFIX}"
                 if [[ "$CACHE_BUSTER_URL" == *'?'* ]]; then
                   CACHE_BUSTER_URL="${CACHE_BUSTER_URL}&t=${TIMESTAMP}"
@@ -62,27 +61,33 @@ jobs:
                 
                 if [ $RETRY_COUNT -gt 0 ]; then
                   echo "Retry attempt $RETRY_COUNT for $CACHE_BUSTER_URL..."
-                  sleep 10
+                  sleep 15
                 fi
                 
                 echo "Refreshing $CACHE_BUSTER_URL"
-                echo "UA: $UA"
-                [ -n "$REF" ] && echo "Referer: $REF"
                 
-                STATUS=$(curl -o /dev/null -s -w "%{http_code}" \
+                # Save body to a temporary file to check for Render's loading screen
+                BODY_FILE=$(mktemp)
+                STATUS=$(curl -s -L -o "$BODY_FILE" -w "%{http_code}" \
                   --connect-timeout 20 \
                   --max-time 60 \
                   -A "$UA" \
                   -e "$REF" \
                   "$CACHE_BUSTER_URL" || echo "000")
                 
-                if [ "$STATUS" -eq 200 ] || [ "$STATUS" -eq 301 ] || [ "$STATUS" -eq 302 ] || [ "$STATUS" -eq 404 ]; then
-                  echo "$(date) ✅ Success: $CACHE_BUSTER_URL (Status: $STATUS)"
+                # Render's "APPLICATION LOADING" page returns 200 OK. 
+                # We need to check the actual content to see if the origin is awake.
+                if grep -qi "APPLICATION LOADING" "$BODY_FILE"; then
+                  echo "$(date) ⏳ Site is still waking up (Render Loading Page detected). Retrying..."
+                  RETRY_COUNT=$((RETRY_COUNT + 1))
+                elif [ "$STATUS" -eq 200 ] || [ "$STATUS" -eq 301 ] || [ "$STATUS" -eq 302 ] || [ "$STATUS" -eq 404 ]; then
+                  echo "$(date) ✅ Success: Actual content loaded (Status: $STATUS)"
                   SUCCESS=true
                 else
-                  echo "$(date) ⚠️ Attempt $((RETRY_COUNT + 1)) failed for $CACHE_BUSTER_URL (Status: $STATUS)"
+                  echo "$(date) ⚠️ Attempt $((RETRY_COUNT + 1)) failed (Status: $STATUS)"
                   RETRY_COUNT=$((RETRY_COUNT + 1))
                 fi
+                rm -f "$BODY_FILE"
               done
               
               # Small gap between sub-path requests
