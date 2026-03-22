@@ -2,7 +2,7 @@ name: Smart Website Refresher
 
 on:
   schedule:
-    - cron: "*/10 * * * *"   # runs every 10 minutes to stay within Render's 15-minute window
+    - cron: "*/5 * * * *"   # runs every 5 minutes (plus jitter) to stay within Render's 15-minute window
   workflow_dispatch:
 
 jobs:
@@ -42,22 +42,40 @@ jobs:
             echo "Waiting $SLEEP_TIME seconds for $SITE..."
             sleep $SLEEP_TIME
             
-            # Use a cache-buster query parameter to ensure Render origin is hit
-            TIMESTAMP=$(date +%s)
-            CACHE_BUSTER_URL="${SITE}?t=${TIMESTAMP}"
+            MAX_RETRIES=3
+            RETRY_COUNT=0
+            SUCCESS=false
             
-            echo "Refreshing $CACHE_BUSTER_URL with UA: $UA and Referer: $REF"
+            while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$SUCCESS" = false ]; do
+              # Use a cache-buster query parameter to ensure Render origin is hit
+              TIMESTAMP=$(date +%s)
+              CACHE_BUSTER_URL="${SITE}?t=${TIMESTAMP}"
+              
+              if [ $RETRY_COUNT -gt 0 ]; then
+                echo "Retry attempt $RETRY_COUNT for $SITE..."
+                sleep 5
+              fi
+              
+              echo "Refreshing $CACHE_BUSTER_URL with UA: $UA and Referer: $REF"
+              
+              # Capture HTTP status code, default to 000 on tool failure
+              STATUS=$(curl -o /dev/null -s -w "%{http_code}" \
+                --connect-timeout 20 \
+                --max-time 60 \
+                -A "$UA" \
+                -e "$REF" \
+                "$CACHE_BUSTER_URL" || echo "000")
+              
+              if [ "$STATUS" -eq 200 ] || [ "$STATUS" -eq 301 ] || [ "$STATUS" -eq 302 ]; then
+                echo "$(date) ✅ Success: $SITE (Status: $STATUS)"
+                SUCCESS=true
+              else
+                echo "$(date) ⚠️ Attempt $((RETRY_COUNT + 1)) failed for $SITE (Status: $STATUS)"
+                RETRY_COUNT=$((RETRY_COUNT + 1))
+              fi
+            done
             
-            STATUS=$(curl -o /dev/null -s -w "%{http_code}" \
-              --connect-timeout 15 \
-              --max-time 45 \
-              -A "$UA" \
-              -e "$REF" \
-              "$CACHE_BUSTER_URL")
-            
-            if [ "$STATUS" -eq 200 ] || [ "$STATUS" -eq 301 ] || [ "$STATUS" -eq 302 ]; then
-              echo "$(date) ✅ Success: $SITE (Status: $STATUS)"
-            else
-              echo "$(date) ⚠️ Warning/Failed: $SITE (Status: $STATUS)"
+            if [ "$SUCCESS" = false ]; then
+              echo "$(date) ❌ Final failure: $SITE after $MAX_RETRIES attempts."
             fi
           done
